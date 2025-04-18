@@ -232,6 +232,9 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   private convertContentToGooglePart = async (
     content: UserMessageContentPart,
   ): Promise<Part | undefined> => {
+    console.log(
+      '<<<<<<<<<<<<<<<<<< EXECUTING MODIFIED google/index.ts convertContentToGooglePart >>>>>>>>>>>>>>>>>>',
+    );
     switch (content.type) {
       default: {
         return undefined;
@@ -246,9 +249,15 @@ export class LobeGoogleAI implements LobeRuntimeAI {
 
         if (type === 'base64') {
           if (!base64) {
-            throw new TypeError("Image URL doesn't contain base64 data");
+            console.error(
+              "LobeGoogleAI Error: Image Data URI doesn't contain base64 data",
+              content.image_url.url,
+            );
+            // 可以選擇拋出錯誤或返回 undefined 跳過這個部分
+            // throw new TypeError("Image URL (Data URI) doesn't contain base64 data");
+            return undefined;
           }
-
+          console.log('LobeGoogleAI: Using provided Base64 Data URI for image.');
           return {
             inlineData: {
               data: base64,
@@ -257,18 +266,84 @@ export class LobeGoogleAI implements LobeRuntimeAI {
           };
         }
 
+        // 情況 2：輸入的是普通的 HTTP/HTTPS URL
         if (type === 'url') {
-          const { base64, mimeType } = await imageUrlToBase64(content.image_url.url);
+          // 檢查環境變數是否要求使用 Base64
+          if (process.env.LLM_VISION_IMAGE_USE_BASE64 === '1') {
+            console.log(
+              'LobeGoogleAI: LLM_VISION_IMAGE_USE_BASE64=1 detected. Fetching and converting image URL to Base64...',
+            );
+            try {
+              const { base64: fetchedBase64, mimeType: fetchedMimeType } = await imageUrlToBase64(
+                content.image_url.url,
+              );
+              console.log(
+                `LobeGoogleAI: Conversion complete. MimeType: ${fetchedMimeType}, Base64 length: ${fetchedBase64.length}`,
+              );
+              return {
+                inlineData: {
+                  data: fetchedBase64,
+                  // 確保 MIME Type 是 Google 支援的，例如 image/png 或 image/jpeg
+                  mimeType:
+                    fetchedMimeType === 'image/webp'
+                      ? 'image/jpeg'
+                      : fetchedMimeType || 'image/jpeg',
+                },
+              };
+            } catch (error) {
+              console.error(
+                'LobeGoogleAI Error: Failed to fetch or convert image URL to Base64.',
+                error,
+              );
+              // 轉換失敗，可以選擇返回 undefined 或包含錯誤訊息的文本部分
+              // return { text: `[Error processing image: ${content.image_url.url}]` };
+              return undefined;
+            }
+          } else {
+            // 如果環境變數沒有設定為 '1'
+            console.warn(
+              `LobeGoogleAI Warning: LLM_VISION_IMAGE_USE_BASE64 is not set to '1'. ` +
+                `Directly sending image URLs to Google Gemini API is often problematic and may result in errors ` +
+                `(like 'Unsupported MIME type'). It's recommended to set this env var to '1' ` +
+                `when using Google Vision models with image URLs. Attempting Base64 conversion anyway.`,
+            );
+            // 即使未設定，鑑於直接傳 URL 的問題，仍然嘗試轉換為 Base64
+            try {
+              const { base64: fetchedBase64, mimeType: fetchedMimeType } = await imageUrlToBase64(
+                content.image_url.url,
+              );
+              console.log(
+                `LobeGoogleAI: Conversion complete (fallback). MimeType: ${fetchedMimeType}, Base64 length: ${fetchedBase64.length}`,
+              );
+              return {
+                inlineData: {
+                  data: fetchedBase64,
+                  mimeType:
+                    fetchedMimeType === 'image/webp'
+                      ? 'image/jpeg'
+                      : fetchedMimeType || 'image/jpeg',
+                },
+              };
+            } catch (error) {
+              console.error(
+                'LobeGoogleAI Error: Failed to fetch or convert image URL to Base64 (fallback).',
+                error,
+              );
+              return undefined;
+            }
 
-          return {
-            inlineData: {
-              data: base64,
-              mimeType,
-            },
-          };
+            // 如果你想在未設定 Base64 時嚴格禁止 URL，可以取消下面這行的註解
+            // throw AgentRuntimeError.createError(AgentRuntimeErrorType.UnsupportedVisionModel, { provider: this.provider, model: 'Gemini (Vision URL requires LLM_VISION_IMAGE_USE_BASE64=1)' });
+          }
         }
 
-        throw new TypeError(`currently we don't support image url: ${content.image_url.url}`);
+        // 如果 URI 類型無法識別
+        console.error(
+          'LobeGoogleAI Error: Unsupported image URL format or type:',
+          content.image_url.url,
+        );
+        // throw new TypeError(`Unsupported image URL format or type: ${content.image_url.url}`);
+        return undefined;
       }
     }
   };
